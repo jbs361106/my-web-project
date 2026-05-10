@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>전국 대기질 실시간 지도</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        :root { --primary: #4f46e5; --bg: #f8fafc; }
+        body { margin: 0; font-family: 'Pretendard', sans-serif; background: var(--bg); display: flex; height: 100vh; overflow: hidden; }
+        
+        /* 사이드바 */
+        #sidebar { width: 400px; background: white; padding: 25px; box-shadow: 4px 0 15px rgba(0,0,0,0.1); z-index: 1000; overflow-y: auto; }
+        h1 { font-size: 1.3rem; color: var(--primary); margin-bottom: 20px; display: flex; align-items: center; gap: 8px; }
+        
+        .select-group { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }
+        select { width: 100%; padding: 12px; border-radius: 12px; border: 2px solid #e2e8f0; font-size: 0.9rem; outline: none; cursor: pointer; transition: 0.2s; }
+        select:focus { border-color: var(--primary); }
+        
+        /* 메인 카드 (통합대기환경지수) */
+        .main-card { background: #f1f5f9; padding: 25px; border-radius: 24px; text-align: center; margin-bottom: 20px; border: 1px solid #e2e8f0; }
+        .khai-label { font-size: 0.85rem; color: #64748b; font-weight: 600; margin-bottom: 5px; }
+        .khai-val { font-size: 3.8rem; font-weight: 800; color: #1e293b; line-height: 1; }
+        .status-badge { display: inline-block; padding: 6px 18px; border-radius: 50px; font-weight: bold; margin-top: 15px; font-size: 0.95rem; }
+        
+        /* 상세 정보 그리드 */
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .grid-item { background: #fff; border: 1px solid #f1f5f9; padding: 15px; border-radius: 16px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
+        .grid-item label { font-size: 0.75rem; color: #94a3b8; display: block; margin-bottom: 6px; font-weight: 500; }
+        .grid-item b { font-size: 1.1rem; color: #334155; }
+        
+        /* 지도 영역 */
+        #map { flex: 1; height: 100%; }
+
+        /* 상태별 색상 */
+        .good { background: #dcfce7; color: #166534; }
+        .normal { background: #fef9c3; color: #854d0e; }
+        .bad { background: #fee2e2; color: #991b1b; }
+        .very-bad { background: #fecaca; color: #7f1d1d; border: 1px solid #ef4444; }
+    </style>
+</head>
+<body>
+
+<div id="sidebar">
+    <h1>🌍 실시간 대기질 모니터</h1>
+
+    <div class="select-group">
+        <label style="font-size: 0.8rem; color: #666; font-weight: 600;">📍 시/도 선택</label>
+        <select id="sido-select">
+            <option value="서울">서울특별시</option>
+            <option value="경기">경기도</option>
+            <option value="전북">전북특별자치도</option>
+            <option value="전남">전라남도</option>
+            <option value="경북">경상북도</option>
+            <option value="경남">경상남도</option>
+            <option value="인천">인천광역시</option>
+            <option value="부산">부산광역시</option>
+            <option value="대구">대구광역시</option>
+            <option value="광주">광주광역시</option>
+            <option value="대전">대전광역시</option>
+            <option value="울산">울산광역시</option>
+            <option value="세종">세종특별자치시</option>
+            <option value="강원">강원특별자치도</option>
+            <option value="충북">충청북도</option>
+            <option value="충남">충청남도</option>
+            <option value="제주">제주특별자치도</option>
+        </select>
+        
+        <label style="font-size: 0.8rem; color: #666; font-weight: 600;">🏢 장소 선택 (내림차순)</label>
+        <select id="station-select">
+            <option value="">지역을 선택하세요</option>
+        </select>
+    </div>
+
+    <div class="main-card">
+        <div class="khai-label">통합대기환경지수 (KHAI)</div>
+        <div id="khai-val" class="khai-val">--</div>
+        <div id="status-badge" class="status-badge">데이터 확인 중</div>
+    </div>
+
+    <div class="grid">
+        <div class="grid-item"><label>미세먼지(PM10)</label><b id="pm10">--</b></div>
+        <div class="grid-item"><label>초미세먼지(PM2.5)</label><b id="pm25">--</b></div>
+        <div class="grid-item"><label>오존(O₃)</label><b id="o3">--</b></div>
+        <div class="grid-item"><label>이산화질소(NO₂)</label><b id="no2">--</b></div>
+        <div class="grid-item"><label>일산화탄소(CO)</label><b id="co">--</b></div>
+        <div class="grid-item"><label>아황산가스(SO₂)</label><b id="so2">--</b></div>
+    </div>
+    
+    <p id="time-info" style="font-size: 0.75rem; color: #94a3b8; text-align: center; margin-top: 25px; padding-top: 15px; border-top: 1px dashed #e2e8f0;"></p>
+</div>
+
+<div id="map"></div>
+
+<script>
+    const API_KEY = 'b50688b046b112df94d63f932ceff2c9496272c7b57bc19023856afc6768cff2';
+    let map;
+    let marker;
+    let currentData = [];
+
+    function initMap() {
+        map = L.map('map').setView([37.5665, 126.9780], 11);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap'
+        }).addTo(map);
+    }
+
+    async function loadSidoData() {
+        const sido = document.getElementById('sido-select').value;
+        const url = `https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getCtprvnRltmMesureDnsty?serviceKey=${API_KEY}&returnType=json&numOfRows=100&pageNo=1&sidoName=${encodeURIComponent(sido)}&ver=1.0`;
+
+        try {
+            const res = await fetch(url);
+            const data = await res.json();
+            
+            currentData = data.response.body.items.sort((a, b) => {
+                return a.stationName > b.stationName ? -1 : a.stationName < b.stationName ? 1 : 0;
+            });
+
+            const stationSelect = document.getElementById('station-select');
+            stationSelect.innerHTML = '<option value="">장소 선택</option>';
+            
+            currentData.forEach(item => {
+                const opt = document.createElement('option');
+                opt.value = item.stationName;
+                opt.innerText = item.stationName;
+                stationSelect.appendChild(opt);
+            });
+
+            if(currentData.length > 0) {
+                stationSelect.selectedIndex = 1;
+                displayData(currentData[0].stationName);
+            }
+        } catch (e) {
+            console.error("데이터 로드 실패", e);
+        }
+    }
+
+    async function displayData(name) {
+        const item = currentData.find(d => d.stationName === name);
+        if (!item) return;
+
+        // 1. 정보 업데이트
+        document.getElementById('khai-val').innerText = item.khaiValue || '-';
+        document.getElementById('pm10').innerText = (item.pm10Value || '-') + " ㎍/㎥";
+        document.getElementById('pm25').innerText = (item.pm25Value || '-') + " ㎍/㎥";
+        document.getElementById('o3').innerText = (item.o3Value || '-') + " ppm";
+        document.getElementById('no2').innerText = (item.no2Value || '-') + " ppm";
+        document.getElementById('co').innerText = (item.coValue || '-') + " ppm";
+        document.getElementById('so2').innerText = (item.so2Value || '-') + " ppm";
+        document.getElementById('time-info').innerText = "최종 측정시간: " + item.dataTime;
+
+        // 2. 상태 배지 업데이트
+        const khai = parseInt(item.khaiValue);
+        const badge = document.getElementById('status-badge');
+        if (!khai) { badge.innerText = "점검중"; badge.className = "status-badge"; }
+        else if (khai <= 50) { badge.innerText = "좋음 😊"; badge.className = "status-badge good"; }
+        else if (khai <= 100) { badge.innerText = "보통 🙂"; badge.className = "status-badge normal"; }
+        else if (khai <= 250) { badge.innerText = "나쁨 😷"; badge.className = "status-badge bad"; }
+        else { badge.innerText = "매우 나쁨 🚨"; badge.className = "status-badge very-bad"; }
+
+        // 3. 지도 마커 표시 및 이동 (수정된 로직)
+        const sido = document.getElementById('sido-select').value;
+        // 검색이 더 잘 되도록 "측정소" 단어를 빼고 "시도 + 측정소이름"으로 검색합니다.
+        const searchQuery = `${sido} ${name}`; 
+
+        try {
+            const searchUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}`;
+            const res = await fetch(searchUrl);
+            const searchData = await res.json();
+
+            if (searchData && searchData.length > 0) {
+                const lat = parseFloat(searchData[0].lat);
+                const lon = parseFloat(searchData[0].lon);
+
+                // 기존 마커가 있다면 제거
+                if (marker) {
+                    map.removeLayer(marker);
+                }
+
+                // 지도 중심 이동 및 줌 설정
+                map.setView([lat, lon], 13);
+
+                // 새로운 마커 추가
+                marker = L.marker([lat, lon]).addTo(map);
+                
+                // 마커 클릭 시 나타날 팝업 설정
+                marker.bindPopup(`<b>${name} 측정소</b><br>통합대기지수: ${item.khaiValue}`).openPopup();
+            } else {
+                console.log("좌표를 찾을 수 없는 지역입니다: " + searchQuery);
+            }
+        } catch (err) {
+            console.error("지도 검색 오류:", err);
+        }
+    }
+
+    document.getElementById('sido-select').addEventListener('change', loadSidoData);
+    document.getElementById('station-select').addEventListener('change', (e) => displayData(e.target.value));
+
+    initMap();
+    loadSidoData();
+</script>
+
+</body>
+</html>
